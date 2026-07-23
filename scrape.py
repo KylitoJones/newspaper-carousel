@@ -90,7 +90,8 @@ def error_summary(errors, limit=6):
     lines = sorted(counts.items(), key=lambda kv: -kv[1])[:limit]
     return [f"      {n:>4} x  {msg}" for msg, n in lines]
 MAX_WORKERS = 16
-REQUEST_TIMEOUT = 20
+KIOSKO_WORKERS = 4      # kiosko drops connections when hit hard; go gently
+REQUEST_TIMEOUT = 25
 
 # ---------------------------------------------------------------------------
 # REGION PRIORITY  — edit freely. Papers are grouped and shown in THIS order.
@@ -220,8 +221,19 @@ def _fp_enumerate():
             if slug in FP_SKIP: continue
             strong = a.find(["strong","b"])
             name = re.sub(r"\s+"," ",(strong.get_text(strip=True) if strong else a.get_text(strip=True))).strip()
+            # World/sports listings print the country right after the name,
+            # e.g. "Marca | Spain | Thursday, July 23" -> use it for regions.
+            country = cc
+            if strong:
+                rest = a.get_text(" ", strip=True)
+                rest = rest.replace(strong.get_text(strip=True), " ", 1).strip()
+                low = re.sub(r"\s+", " ", rest).lower()
+                for label, code in COUNTRY_NAME_TO_CODE.items():
+                    if low.startswith(label):
+                        country = code
+                        break
             if slug and name and slug not in slugs:
-                slugs[slug] = (name, cc)
+                slugs[slug] = (name, country)
     return slugs
 
 def _fp_fetch(slug, name, cc, verbose=False):
@@ -287,7 +299,7 @@ def _kiosko_fetch_index(url, verbose=False):
     """Returns (found, error). Images may be lazy-loaded, so check several attrs."""
     found = {}
     try:
-        r = http_get(url, referer=KIOSKO + "/")
+        r = http_get(url, referer=KIOSKO + "/", tries=4)
     except Exception as e:
         return found, f"{url.rsplit('/',2)[-2]}: {e}"
     soup = BeautifulSoup(r.text, "html.parser")
@@ -317,7 +329,7 @@ def scrape_kiosko(verbose=False):
     urls = _kiosko_index_urls()
     log(f"  Kiosko.net: scanning {len(urls)} index pages...")
     errors = []
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+    with ThreadPoolExecutor(max_workers=KIOSKO_WORKERS) as pool:
         futs = [pool.submit(_kiosko_fetch_index, u, verbose) for u in urls]
         for f in as_completed(futs):
             got, err = f.result()
@@ -333,23 +345,28 @@ def scrape_kiosko(verbose=False):
 # ---------------------------------------------------------------------------
 # Merge + rank + write
 # ---------------------------------------------------------------------------
-def merge(groups, aliases, prefer="Freedom Forum"):
+def merge(groups, aliases, prefer="Kiosko"):
+    """Combine the sources. When a paper appears more than once we pick a primary
+    copy, but we KEEP the others as `alts` — if the primary's image can't be
+    downloaded we can fall back to another source's copy of the same paper."""
     by_key = {}
     for paper in [p for g in groups for p in g]:
         key = dedup_key(paper["name"], aliases)
         cur = by_key.get(key)
         if cur is None:
-            by_key[key] = paper; continue
-        # inherit a country if the kept copy lacks one
-        if not cur.get("country") and paper.get("country"):
-            cur["country"] = paper["country"]
-        if not paper.get("country") and cur.get("country"):
-            paper["country"] = cur["country"]
-        dn, do = paper.get("date") or "", cur.get("date") or ""
-        if dn > do or (dn == do and paper["source"] == prefer):
-            # keep whichever we now choose, but don't lose a known country
-            paper["country"] = paper.get("country") or cur.get("country") or ""
+            paper["alts"] = []
             by_key[key] = paper
+            continue
+
+        alts = cur.pop("alts", [])
+        # whichever copy loses becomes a fallback for the winner
+        dn, do = paper.get("date") or "", cur.get("date") or ""
+        newer = dn > do or (dn == do and paper["source"] == prefer)
+        winner, loser = (paper, cur) if newer else (cur, paper)
+        winner["country"] = winner.get("country") or loser.get("country") or ""
+        alts.append({k: loser.get(k) for k in ("image", "page_url", "source", "date")})
+        winner["alts"] = alts
+        by_key[key] = winner
     return list(by_key.values())
 
 def _slug_for(paper) -> str:
@@ -359,23 +376,46 @@ def _slug_for(paper) -> str:
     return f"{base[:60]}-{src}"
 
 
+def _image_urls_to_try(paper):
+    """Every URL worth attempting for one paper: its own address (plus filename
+    variants), then the same paper from any other source."""
+    out = []
+    for cand in [paper] + (paper.get("alts") or []):
+        u, ref = cand.get("image"), cand.get("page_url")
+        if not u:
+            continue
+        out.append((u, ref))
+        if u.endswith(".webp.jpg"):
+            out.append((u[:-4], ref))            # -> .webp
+        elif u.endswith(".jpg.webp"):
+            out.append((u[:-5], ref))            # -> .jpg
+    return out
+
+
 def _mirror_one(paper):
     """Download one front page, save a full + thumb copy, return (paper, None)
     with local relative paths, or (None, reason) if it couldn't be fetched.
 
     The Referer matters: these sites serve images only to requests that look
     like they came from their own pages."""
-    ref = paper.get("page_url") or REFERERS.get(paper["source"])
-    try:
-        r = http_get(paper["image"], referer=ref, tries=2, timeout=45, image=True)
-        ctype = r.headers.get("Content-Type", "?").split(";")[0]
-        if not ctype.startswith("image"):
-            return None, f"served {ctype} instead of an image"
-        img = Image.open(io.BytesIO(r.content))
-        if img.mode not in ("RGB", "L"):
-            img = img.convert("RGB")
-    except Exception as e:
-        return None, str(e)[:70]
+    img, why, used_url = None, "no image url", None
+    for url, ref in _image_urls_to_try(paper):
+        try:
+            r = http_get(url, referer=ref or REFERERS.get(paper["source"]),
+                         tries=2, timeout=45, image=True)
+            ctype = r.headers.get("Content-Type", "?").split(";")[0]
+            if not ctype.startswith("image"):
+                why = f"served {ctype} instead of an image"
+                continue
+            img = Image.open(io.BytesIO(r.content))
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            used_url = url
+            break
+        except Exception as e:
+            why = str(e)[:70]
+    if img is None:
+        return None, why
 
     slug = _slug_for(paper)
     w, h = img.size
@@ -397,7 +437,7 @@ def _mirror_one(paper):
         return None, "save failed: " + str(e)[:50]
 
     out = dict(paper)
-    out["origin"] = paper["image"]          # kept for reference
+    out["origin"] = used_url or paper["image"]   # the URL that actually worked
     out["image"] = f"img/full/{slug}.jpg"   # relative to the site root
     out["thumb"] = f"img/thumb/{slug}.jpg"
     return out, None
@@ -433,7 +473,7 @@ def main():
     ap = argparse.ArgumentParser(description="Scrape today's newspaper front pages.")
     ap.add_argument("--date")
     ap.add_argument("--verbose", action="store_true")
-    ap.add_argument("--prefer", default="Freedom Forum",
+    ap.add_argument("--prefer", default="Kiosko",
                     choices=["Freedom Forum","FrontPages.com","Kiosko"])
     ap.add_argument("--no-mirror", action="store_true",
                     help="skip downloading images; link to the original sites instead "
@@ -466,7 +506,8 @@ def main():
         rank, region = region_of(p.get("country") or "")
         p["region"], p["_rank"] = region, rank
     merged.sort(key=lambda p: (p["_rank"], p["name"].lower()))
-    for p in merged: p.pop("_rank", None)
+    for p in merged:
+        p.pop("_rank", None); p.pop("alts", None)
 
     SITE_DIR.mkdir(parents=True, exist_ok=True)
     # region order actually present (for the UI filter), in priority order
