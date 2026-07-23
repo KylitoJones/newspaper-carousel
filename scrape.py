@@ -14,7 +14,7 @@ Western Europe, Central America, South America, then everywhere else.
 Output: site/manifest.json  (the browse page reads this file)
 """
 
-import argparse, json, re, sys, time
+import argparse, io, json, re, shutil, sys, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -22,11 +22,22 @@ from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
+from PIL import Image
 
 HERE = Path(__file__).resolve().parent
 SITE_DIR = HERE / "site"
 MANIFEST_PATH = SITE_DIR / "manifest.json"
 ALIASES_PATH = HERE / "aliases.json"
+
+# Images are downloaded into site/img/ and served from your own domain. This
+# sidesteps hotlink protection, referrer rules, and ad blockers entirely, and
+# it means a paper whose image is missing simply doesn't appear (instead of
+# showing a broken card). These files are published as part of the deployment
+# artifact and are never committed to the repository, so nothing accumulates.
+IMG_DIR = SITE_DIR / "img"
+THUMB_WIDTH = 420          # what the grid displays
+FULL_MAX_EDGE = 1800       # what gets posted to Bluesky
+MIRROR_WORKERS = 12
 DENVER = ZoneInfo("America/Denver")
 HEADERS = {"User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36")}
@@ -282,12 +293,84 @@ def merge(groups, aliases, prefer="Freedom Forum"):
             by_key[key] = paper
     return list(by_key.values())
 
+def _slug_for(paper) -> str:
+    """Stable, filesystem-safe filename for a paper."""
+    base = re.sub(r"[^a-z0-9]+", "-", paper["name"].lower()).strip("-")
+    src = {"Freedom Forum": "ff", "FrontPages.com": "fp", "Kiosko": "ki"}.get(paper["source"], "xx")
+    return f"{base[:60]}-{src}"
+
+
+def _mirror_one(paper):
+    """Download one front page, save a full + thumb copy, return updated paper
+    with local relative paths. Returns None if the image can't be fetched."""
+    try:
+        r = requests.get(paper["image"], headers=HEADERS, timeout=45)
+        r.raise_for_status()
+        img = Image.open(io.BytesIO(r.content))
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+    except Exception:
+        return None
+
+    slug = _slug_for(paper)
+    w, h = img.size
+    if w < 200 or h < 200:
+        return None  # placeholder / spacer image, not a real front page
+
+    full = img
+    if max(w, h) > FULL_MAX_EDGE:
+        s = FULL_MAX_EDGE / max(w, h)
+        full = img.resize((int(w * s), int(h * s)), Image.LANCZOS)
+    thumb = img.copy()
+    if w > THUMB_WIDTH:
+        thumb = img.resize((THUMB_WIDTH, int(h * THUMB_WIDTH / w)), Image.LANCZOS)
+
+    try:
+        full.save(IMG_DIR / "full" / f"{slug}.jpg", "JPEG", quality=86, optimize=True)
+        thumb.save(IMG_DIR / "thumb" / f"{slug}.jpg", "JPEG", quality=80, optimize=True)
+    except Exception:
+        return None
+
+    out = dict(paper)
+    out["origin"] = paper["image"]          # kept for reference
+    out["image"] = f"img/full/{slug}.jpg"   # relative to the site root
+    out["thumb"] = f"img/thumb/{slug}.jpg"
+    return out
+
+
+def mirror(papers, verbose=False):
+    """Download every front page locally. Papers that fail are dropped."""
+    if IMG_DIR.exists():
+        shutil.rmtree(IMG_DIR)            # start clean each morning
+    (IMG_DIR / "full").mkdir(parents=True, exist_ok=True)
+    (IMG_DIR / "thumb").mkdir(parents=True, exist_ok=True)
+
+    log(f"\nMirroring {len(papers)} images locally (this is the slow part)...")
+    out, failed = [], 0
+    with ThreadPoolExecutor(max_workers=MIRROR_WORKERS) as pool:
+        futs = {pool.submit(_mirror_one, p): p for p in papers}
+        for f in as_completed(futs):
+            res = f.result()
+            if res:
+                out.append(res)
+            else:
+                failed += 1
+                if verbose:
+                    log(f"    x  {futs[f]['name']} ({futs[f]['source']}) — image not available")
+    size_mb = sum(f.stat().st_size for f in IMG_DIR.rglob("*.jpg")) / 1e6
+    log(f"  mirrored {len(out)} images ({size_mb:.0f} MB), {failed} unavailable and dropped")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description="Scrape today's newspaper front pages.")
     ap.add_argument("--date")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--prefer", default="Freedom Forum",
                     choices=["Freedom Forum","FrontPages.com","Kiosko"])
+    ap.add_argument("--no-mirror", action="store_true",
+                    help="skip downloading images; link to the original sites instead "
+                         "(much faster, but images may not display)")
     args = ap.parse_args()
 
     target = args.date or datetime.now(DENVER).date().isoformat()
@@ -303,6 +386,13 @@ def main():
     if not merged:
         log("ERROR: no papers found. Not overwriting the existing manifest.")
         sys.exit(1)
+
+    if not args.no_mirror:
+        mirrored = mirror(merged, args.verbose)
+        if mirrored:
+            merged = mirrored
+        else:
+            log("  ! nothing could be mirrored; falling back to original image links")
 
     # attach region + rank, then sort by (region priority, name)
     for p in merged:
@@ -331,3 +421,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
