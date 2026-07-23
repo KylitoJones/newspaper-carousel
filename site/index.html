@@ -3,9 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- Don't send the Referer header, so newspaper CDNs (which block hotlinking
-     from other sites) will still serve their front-page images to this page. -->
-<meta name="referrer" content="no-referrer">
 <title>Newsstand</title>
 <style>
   :root{
@@ -242,7 +239,8 @@ function prepare(){
   if(!state.selected.length) return;
   const images=state.selected.map(id=>{
     const p=paperById(id);
-    return {name:p.name,date:p.date,source:p.source,url:p.image,page_url:p.page_url};
+    return {name:p.name,date:p.date,source:p.source,
+            url:new URL(p.image, location.href).href, page_url:p.page_url};
   });
   const payload={created_at:new Date().toISOString(),text:$("#text").value.trim(),images};
   const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
