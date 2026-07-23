@@ -1,0 +1,52 @@
+name: Build front pages
+
+on:
+  # 14:00 UTC = 8am Mountain (summer / MDT); 15:00 UTC = 8am Mountain (winter / MST).
+  # Both fire year-round; whichever isn't 8am is an hour off, which is harmless —
+  # it's still "today's" front pages. GitHub sometimes delays scheduled runs by a
+  # few minutes, so "about 8am" is realistic.
+  schedule:
+    - cron: "0 14 * * *"
+    - cron: "0 15 * * *"
+  # This is your FORCE SCRAPE button. In the repo: Actions -> "Build front pages"
+  # -> "Run workflow". Use it to test now, or to pick up papers that posted late.
+  workflow_dispatch:
+
+# Let scheduled/manual runs deploy to Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# If two runs overlap, keep the newest.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install scraper dependencies
+        run: pip install -r requirements-scrape.txt
+
+      - name: Scrape front pages
+        run: python scrape.py --verbose
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
