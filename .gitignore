@@ -1,0 +1,5 @@
+.env
+bluesky-post.json
+__pycache__/
+*.pyc
+.DS_Store
