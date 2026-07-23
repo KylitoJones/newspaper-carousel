@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Don't send the Referer header, so newspaper CDNs (which block hotlinking
+     from other sites) will still serve their front-page images to this page. -->
+<meta name="referrer" content="no-referrer">
+<title>Newsstand</title>
+<style>
+  :root{
+    --paper:#f4f5f6;--card:#fff;--ink:#15171c;--muted:#6b7280;--line:#e2e4e8;
+    --accent:#1746c4;--shadow:0 1px 2px rgba(20,23,28,.06),0 8px 24px rgba(20,23,28,.06);
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--paper);color:var(--ink);font-family:var(--sans);line-height:1.4;
+    -webkit-font-smoothing:antialiased;padding-bottom:180px}
+  a{color:inherit}
+  header.top{position:sticky;top:0;z-index:20;background:rgba(244,245,246,.9);
+    backdrop-filter:saturate(1.2) blur(8px);border-bottom:1px solid var(--line)}
+  .top-inner{max-width:1400px;margin:0 auto;padding:14px 20px;display:flex;flex-wrap:wrap;
+    align-items:baseline;gap:8px 18px}
+  .wordmark{font-weight:800;letter-spacing:-.02em;font-size:22px}
+  .stamp{font-family:var(--mono);font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  .controls{margin-left:auto;display:flex;gap:10px;flex-wrap:wrap}
+  input[type=search],select{font:inherit;font-size:14px;padding:7px 10px;border:1px solid var(--line);
+    border-radius:8px;background:var(--card);color:var(--ink)}
+  input[type=search]{min-width:180px}
+  input:focus,select:focus,button:focus-visible,.card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  main{max-width:1400px;margin:0 auto;padding:20px}
+  .grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+  .region-head{grid-column:1/-1;display:flex;align-items:baseline;gap:12px;
+    margin:18px 2px 2px;padding-bottom:8px;border-bottom:2px solid var(--ink)}
+  .region-head:first-child{margin-top:0}
+  .region-head h2{font-size:17px;font-weight:750;letter-spacing:-.01em;margin:0}
+  .region-head .n{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .card{position:relative;background:var(--card);border:1px solid var(--line);border-radius:12px;
+    overflow:hidden;box-shadow:var(--shadow);cursor:pointer;transition:transform .12s,border-color .12s;
+    text-align:left;padding:0;font:inherit;color:inherit;display:flex;flex-direction:column}
+  .card:hover{transform:translateY(-2px)}
+  .card.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent),var(--shadow)}
+  .thumb{aspect-ratio:3/4;background:#eef0f2;overflow:hidden;display:block}
+  .thumb img{width:100%;height:100%;object-fit:cover;object-position:top center;display:block}
+  .thumb.broken{display:flex;align-items:center;justify-content:center;font-family:var(--mono);
+    font-size:11px;color:var(--muted);text-align:center;padding:10px}
+  .meta{padding:9px 11px 11px}
+  .name{font-weight:650;font-size:13.5px;letter-spacing:-.01em;line-height:1.25}
+  .sub{margin-top:3px;font-family:var(--mono);font-size:10.5px;color:var(--muted);
+    text-transform:uppercase;letter-spacing:.05em;display:flex;gap:8px;flex-wrap:wrap}
+  .badge{position:absolute;top:8px;left:8px;width:26px;height:26px;border-radius:50%;
+    background:var(--accent);color:#fff;font-weight:700;font-size:14px;display:none;
+    align-items:center;justify-content:center;box-shadow:var(--shadow)}
+  .card.sel .badge{display:flex}
+  .src{position:absolute;top:8px;right:8px;font-family:var(--mono);font-size:9px;
+    background:rgba(21,23,28,.72);color:#fff;padding:2px 5px;border-radius:5px;
+    letter-spacing:.04em;text-transform:uppercase}
+  .open{position:absolute;bottom:8px;right:8px;background:rgba(255,255,255,.92);border:1px solid var(--line);
+    border-radius:6px;font-size:11px;padding:3px 7px;opacity:0;transition:opacity .12s;
+    text-decoration:none;font-family:var(--mono)}
+  .card:hover .open{opacity:1}
+  .empty{padding:60px 20px;text-align:center;color:var(--muted)}
+  .tray{position:fixed;left:0;right:0;bottom:0;z-index:30;background:var(--card);border-top:1px solid var(--line);
+    box-shadow:0 -8px 24px rgba(20,23,28,.08);transform:translateY(100%);transition:transform .18s}
+  .tray.show{transform:translateY(0)}
+  .tray-inner{max-width:1400px;margin:0 auto;padding:12px 20px;display:grid;
+    grid-template-columns:auto 1fr auto;gap:16px;align-items:center}
+  .picks{display:flex;gap:8px}
+  .pick{position:relative;width:46px;height:60px;border-radius:6px;overflow:hidden;border:1px solid var(--line);background:#eef0f2}
+  .pick img{width:100%;height:100%;object-fit:cover;object-position:top center}
+  .pick button{position:absolute;top:-6px;right:-6px;width:18px;height:18px;border:none;border-radius:50%;
+    background:var(--ink);color:#fff;font-size:12px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}
+  .slot{width:46px;height:60px;border:1px dashed var(--line);border-radius:6px}
+  .composer{display:flex;flex-direction:column;gap:4px;min-width:0}
+  .composer textarea{font:inherit;font-size:14px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;
+    resize:vertical;min-height:44px;max-height:120px;width:100%;background:var(--paper)}
+  .cc{font-family:var(--mono);font-size:11px;color:var(--muted);align-self:flex-end}
+  .cc.over{color:#c0392b;font-weight:700}
+  .tray-actions{display:flex;flex-direction:column;gap:8px;align-items:stretch}
+  button.primary{background:var(--accent);color:#fff;border:none;border-radius:9px;font:inherit;
+    font-weight:650;font-size:14px;padding:11px 18px;cursor:pointer;white-space:nowrap}
+  button.primary:disabled{background:#9aa3b2;cursor:not-allowed}
+  button.ghost{background:none;border:none;color:var(--muted);font:inherit;font-size:12px;cursor:pointer;
+    text-decoration:underline;font-family:var(--mono)}
+  .count{font-family:var(--mono);font-size:12px;color:var(--muted);text-align:center}
+  @media (max-width:640px){
+    .tray-inner{grid-template-columns:1fr;gap:10px}
+    .picks{order:2}.composer{order:1}.tray-actions{order:3;flex-direction:row}
+    body{padding-bottom:240px}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <span class="wordmark">Newsstand</span>
+    <span class="stamp" id="stamp">loading…</span>
+    <div class="controls">
+      <input type="search" id="q" placeholder="Filter by name…" autocomplete="off">
+      <select id="region"><option value="">All regions</option></select>
+      <select id="src">
+        <option value="">All sources</option>
+        <option value="Freedom Forum">Freedom Forum</option>
+        <option value="FrontPages.com">FrontPages.com</option>
+        <option value="Kiosko">Kiosko</option>
+      </select>
+    </div>
+  </div>
+</header>
+<main>
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="empty" hidden></div>
+</main>
+<div class="tray" id="tray">
+  <div class="tray-inner">
+    <div class="picks" id="picks"></div>
+    <div class="composer">
+      <textarea id="text" maxlength="600" placeholder="Post text…"></textarea>
+      <span class="cc" id="cc">0 / 300</span>
+    </div>
+    <div class="tray-actions">
+      <button class="primary" id="prepare" disabled>Prepare post</button>
+      <div class="count"><span id="count">0</span> of 4 selected</div>
+      <button class="ghost" id="clear">clear all</button>
+    </div>
+  </div>
+</div>
+<script>
+const MAX = 4;
+const state = { papers: [], regions: [], selected: [] };
+const $ = s => document.querySelector(s);
+const grid = $("#grid");
+const idOf = p => p.source + "|" + p.name;
+
+function prettyDate(iso){
+  if(!iso) return "";
+  const d = new Date(iso+"T12:00:00");
+  return isNaN(d) ? iso : d.toLocaleDateString(undefined,{weekday:"short",month:"short",day:"numeric"});
+}
+function defaultText(t){
+  const d = new Date((t||"")+"T12:00:00");
+  const nice = isNaN(d)?"":d.toLocaleDateString(undefined,{weekday:"long",month:"long",day:"numeric",year:"numeric"});
+  return "Front pages — "+nice;
+}
+function srcTag(s){ return s==="Freedom Forum"?"FF":s==="FrontPages.com"?"FP":"KI"; }
+function srcLong(s){ return s==="FrontPages.com"?"FrontPages":s; }
+
+async function load(){
+  try{
+    const res = await fetch("manifest.json?_="+Date.now());
+    if(!res.ok) throw new Error(res.status);
+    const m = await res.json();
+    state.papers = m.papers||[];
+    state.regions = m.regions||[];
+    const built = m.built_at ? new Date(m.built_at) : null;
+    $("#stamp").textContent = (m.count||state.papers.length)+" papers · "+
+      (built?"updated "+built.toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}):"");
+    const rsel = $("#region");
+    for(const r of state.regions){
+      const o=document.createElement("option"); o.value=r; o.textContent=r; rsel.appendChild(o);
+    }
+    $("#text").value = defaultText(m.target_date);
+    updateComposer(); render();
+  }catch(e){
+    $("#stamp").textContent="";
+    $("#empty").hidden=false;
+    $("#empty").innerHTML="Couldn't load <code>manifest.json</code>. Run <code>python scrape.py</code>, then reload. ("+e.message+")";
+  }
+}
+function currentList(){
+  const q=$("#q").value.trim().toLowerCase(), src=$("#src").value, reg=$("#region").value;
+  return state.papers.filter(p =>
+    (!src||p.source===src) && (!reg||p.region===reg) &&
+    (!q||p.name.toLowerCase().includes(q)));
+}
+function render(){
+  const list = currentList();
+  grid.innerHTML="";
+  $("#empty").hidden = list.length>0;
+  if(!list.length){ $("#empty").textContent="No papers match that filter."; return; }
+  let region=null;
+  for(const p of list){
+    if(p.region!==region){
+      region=p.region;
+      const h=document.createElement("div"); h.className="region-head";
+      const n=list.filter(x=>x.region===region).length;
+      h.innerHTML=`<h2>${escapeHtml(region)}</h2><span class="n">${n}</span>`;
+      grid.appendChild(h);
+    }
+    const id=idOf(p), pos=state.selected.indexOf(id);
+    const card=document.createElement("button");
+    card.className="card"+(pos>=0?" sel":""); card.type="button";
+    card.setAttribute("aria-pressed",pos>=0);
+    card.innerHTML=`
+      <span class="badge">${pos>=0?pos+1:""}</span>
+      <span class="src">${srcTag(p.source)}</span>
+      <span class="thumb"><img loading="lazy" src="${p.thumb||p.image}" alt=""></span>
+      <a class="open" href="${p.page_url}" target="_blank" rel="noopener" onclick="event.stopPropagation()">source ↗</a>
+      <span class="meta"><span class="name">${escapeHtml(p.name)}</span>
+      <span class="sub"><span>${escapeHtml(srcLong(p.source))}</span><span>${prettyDate(p.date)}</span></span></span>`;
+    const img=card.querySelector("img");
+    img.addEventListener("error",()=>{const t=card.querySelector(".thumb");t.classList.add("broken");t.textContent="image unavailable";});
+    card.addEventListener("click",()=>toggle(id));
+    grid.appendChild(card);
+  }
+}
+function toggle(id){
+  const i=state.selected.indexOf(id);
+  if(i>=0) state.selected.splice(i,1);
+  else{ if(state.selected.length>=MAX){flashLimit();return;} state.selected.push(id); }
+  render(); updateComposer();
+}
+let limitTimer;
+function flashLimit(){
+  const c=$("#count"); c.style.color="#c0392b"; c.style.fontWeight="700";
+  clearTimeout(limitTimer); limitTimer=setTimeout(()=>{c.style.color="";c.style.fontWeight="";},900);
+}
+const paperById = id => state.papers.find(p=>idOf(p)===id);
+function updateComposer(){
+  const n=state.selected.length;
+  $("#count").textContent=n; $("#tray").classList.toggle("show",n>0); $("#prepare").disabled=n===0;
+  const picks=$("#picks"); picks.innerHTML="";
+  for(let i=0;i<MAX;i++){
+    if(i<n){
+      const p=paperById(state.selected[i]);
+      const el=document.createElement("div"); el.className="pick";
+      el.innerHTML=`<img src="${p.thumb||p.image}" alt=""><button title="remove" aria-label="remove ${escapeHtml(p.name)}">×</button>`;
+      el.querySelector("button").addEventListener("click",()=>toggle(state.selected[i]));
+      picks.appendChild(el);
+    }else{ const el=document.createElement("div"); el.className="slot"; picks.appendChild(el); }
+  }
+  updateCC();
+}
+function updateCC(){
+  const len=[...$("#text").value.trim()].length;
+  const cc=$("#cc"); cc.textContent=len+" / 300"; cc.classList.toggle("over",len>300);
+}
+function prepare(){
+  if(!state.selected.length) return;
+  const images=state.selected.map(id=>{
+    const p=paperById(id);
+    return {name:p.name,date:p.date,source:p.source,url:p.image,page_url:p.page_url};
+  });
+  const payload={created_at:new Date().toISOString(),text:$("#text").value.trim(),images};
+  const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="bluesky-post.json";
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+  const btn=$("#prepare"),old=btn.textContent; btn.textContent="Saved ✓ run post.py"; setTimeout(()=>btn.textContent=old,2500);
+}
+const escapeHtml = s => s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+$("#q").addEventListener("input",render);
+$("#src").addEventListener("change",render);
+$("#region").addEventListener("change",render);
+$("#text").addEventListener("input",updateCC);
+$("#prepare").addEventListener("click",prepare);
+$("#clear").addEventListener("click",()=>{state.selected=[];render();updateComposer();});
+load();
+</script>
+</body>
+</html>

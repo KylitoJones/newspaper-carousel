@@ -1,0 +1,14 @@
+{
+  "built_at": "2026-07-21T08:00:00-06:00",
+  "target_date": "2026-07-21",
+  "count": 6,
+  "regions": ["United States", "Western Europe"],
+  "papers": [
+    {"name":"The New York Times","date":"2026-07-21","source":"FrontPages.com","country":"us","region":"United States","image":"https://www.frontpages.com/g/2026/07/21/the-new-york-times-0709442r5.webp.jpg","thumb":"https://www.frontpages.com/g/2026/07/21/the-new-york-times-0709442r5.webp.jpg","page_url":"https://www.frontpages.com/the-new-york-times/"},
+    {"name":"The Wall Street Journal","date":"2026-07-20","source":"Freedom Forum","country":"us","region":"United States","image":"https://d2dr22b2lm4tvw.cloudfront.net/wsj/2026-07-20/front-page-large.jpg","thumb":"https://d2dr22b2lm4tvw.cloudfront.net/wsj/2026-07-20/front-page-large.jpg","page_url":"https://frontpages.freedomforum.org/newspapers/wsj-The_Wall_Street_Journal"},
+    {"name":"USA Today","date":"2026-07-21","source":"Kiosko","country":"us","region":"United States","image":"https://img.kiosko.net/2026/07/21/us/usa_today.750.jpg","thumb":"https://img.kiosko.net/2026/07/21/us/usa_today.200.jpg","page_url":"https://en.kiosko.net/us/np/usa_today.html"},
+    {"name":"The Washington Post","date":"2026-07-21","source":"Kiosko","country":"us","region":"United States","image":"https://img.kiosko.net/2026/07/21/us/washington_post.750.jpg","thumb":"https://img.kiosko.net/2026/07/21/us/washington_post.200.jpg","page_url":"https://en.kiosko.net/us/np/washington_post.html"},
+    {"name":"Los Angeles Times","date":"2026-07-21","source":"Kiosko","country":"us","region":"United States","image":"https://img.kiosko.net/2026/07/21/us/latimes.750.jpg","thumb":"https://img.kiosko.net/2026/07/21/us/latimes.200.jpg","page_url":"https://en.kiosko.net/us/np/latimes.html"},
+    {"name":"Le Monde","date":"2026-07-21","source":"Kiosko","country":"fr","region":"Western Europe","image":"https://img.kiosko.net/2026/07/21/fr/le_monde.750.jpg","thumb":"https://img.kiosko.net/2026/07/21/fr/le_monde.200.jpg","page_url":"https://en.kiosko.net/fr/np/le_monde.html"}
+  ]
+}
