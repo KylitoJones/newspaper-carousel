@@ -14,7 +14,7 @@ Western Europe, Central America, South America, then everywhere else.
 Output: site/manifest.json  (the browse page reads this file)
 """
 
-import argparse, io, json, re, shutil, sys, time
+import argparse, io, json, random, re, shutil, sys, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -39,8 +39,56 @@ THUMB_WIDTH = 420          # what the grid displays
 FULL_MAX_EDGE = 1800       # what gets posted to Bluesky
 MIRROR_WORKERS = 12
 DENVER = ZoneInfo("America/Denver")
-HEADERS = {"User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-           "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36")}
+HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+IMAGE_ACCEPT = "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
+
+# Several of these sites only serve images when the request looks like it came
+# from their own pages (hotlink protection), so we send a matching Referer.
+REFERERS = {
+    "Freedom Forum": "https://frontpages.freedomforum.org/",
+    "FrontPages.com": "https://www.frontpages.com/",
+    "Kiosko": "https://en.kiosko.net/",
+}
+
+
+def http_get(url, referer=None, tries=3, timeout=None, image=False):
+    """GET with retries/backoff. Raises RuntimeError carrying a readable reason."""
+    h = dict(HEADERS)
+    if referer:
+        h["Referer"] = referer
+    if image:
+        h["Accept"] = IMAGE_ACCEPT
+    last = "unknown error"
+    for i in range(tries):
+        try:
+            r = requests.get(url, headers=h, timeout=timeout or REQUEST_TIMEOUT)
+            if r.status_code == 429 or 500 <= r.status_code < 600:
+                last = f"HTTP {r.status_code}"
+                time.sleep(4 * (i + 1) + random.random() * 2)
+                continue
+            if r.status_code >= 400:
+                raise RuntimeError(f"HTTP {r.status_code}")
+            return r
+        except RuntimeError:
+            raise
+        except Exception as e:
+            last = type(e).__name__ + ": " + str(e)[:90]
+            time.sleep(1.5 * (i + 1))
+    raise RuntimeError(last)
+
+
+def error_summary(errors, limit=6):
+    """Group identical failure reasons so the log stays readable."""
+    counts = {}
+    for e in errors:
+        counts[e] = counts.get(e, 0) + 1
+    lines = sorted(counts.items(), key=lambda kv: -kv[1])[:limit]
+    return [f"      {n:>4} x  {msg}" for msg, n in lines]
 MAX_WORKERS = 16
 REQUEST_TIMEOUT = 20
 
@@ -122,9 +170,10 @@ def scrape_freedomforum(target, verbose=False):
     for url in ("https://frontpages.freedomforum.org/",
                 "https://frontpages.freedomforum.org/gallery"):
         try:
-            r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT); r.raise_for_status()
+            r = http_get(url, referer="https://www.google.com/", tries=4)
         except Exception as e:
-            log(f"  ! Freedom Forum fetch failed ({url}): {e}"); continue
+            log(f"  ! Freedom Forum unreachable ({url.rsplit('/',1)[-1] or 'home'}): {e}")
+            continue
         html = r.text
         for code, raw in FF_LINK_RE.findall(html):
             code = code.lower()
@@ -143,7 +192,6 @@ def scrape_freedomforum(target, verbose=False):
         out.append({"name": name, "date": info["date"], "image": info["image"],
                     "thumb": info["image"], "source": "Freedom Forum", "country": "us",
                     "page_url": f"https://frontpages.freedomforum.org/newspapers/{code}-{name.replace(' ','_')}"})
-        if verbose: log(f"    FF  {name}")
     log(f"  Freedom Forum: {len(out)} papers")
     return out
 
@@ -161,7 +209,7 @@ def _fp_enumerate():
     slugs = {}  # slug -> (name, country)
     for path, cc in FP_CATS.items():
         try:
-            r = requests.get(FP_BASE+path, headers=HEADERS, timeout=REQUEST_TIMEOUT); r.raise_for_status()
+            r = http_get(FP_BASE + path, referer=FP_BASE + "/")
         except Exception as e:
             log(f"  ! FrontPages fetch failed ({path}): {e}"); continue
         soup = BeautifulSoup(r.text, "html.parser")
@@ -179,7 +227,7 @@ def _fp_enumerate():
 def _fp_fetch(slug, name, cc, verbose=False):
     url = f"{FP_BASE}/{slug}/"
     try:
-        r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT); r.raise_for_status()
+        r = http_get(url, referer=FP_BASE + "/")
     except Exception:
         return None
     soup = BeautifulSoup(r.text, "html.parser")
@@ -217,7 +265,10 @@ def scrape_frontpages(verbose=False):
 # Kiosko.net  (index pages already contain image URLs + names; 1 fetch/region)
 # ---------------------------------------------------------------------------
 KIOSKO = "https://en.kiosko.net"
-KIOSKO_IMG_RE = re.compile(r"https?://img\.kiosko\.net/(\d{4})/(\d{2})/(\d{2})/([a-z]{2})/([a-z0-9_\-]+)\.\d+\.jpg", re.I)
+# NOTE: kiosko writes these as protocol-relative ("//img.kiosko.net/...") on some
+# pages, so the scheme must be optional or nothing matches at all.
+KIOSKO_IMG_RE = re.compile(
+    r"(?:https?:)?//img\.kiosko\.net/(\d{4})/(\d{2})/(\d{2})/([a-z]{2})/([a-z0-9_\-]+)\.\d+\.jpg", re.I)
 KIOSKO_COUNTRIES = ["us","ca","mx","uk","ie","fr","de","nl","be","ch","es","it","pt","ad",
     "no","se","dk","ar","bo","br","cl","co","cr","cu","do","ec","sv","gt","hn","ni","pa",
     "py","pe","pr","uy","ve","eg","ma","ng","za","au","cn","in","ir","il","jp","nz","tr",
@@ -233,14 +284,19 @@ def _kiosko_index_urls():
     return urls
 
 def _kiosko_fetch_index(url, verbose=False):
+    """Returns (found, error). Images may be lazy-loaded, so check several attrs."""
     found = {}
     try:
-        r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT); r.raise_for_status()
-    except Exception:
-        return found
+        r = http_get(url, referer=KIOSKO + "/")
+    except Exception as e:
+        return found, f"{url.rsplit('/',2)[-2]}: {e}"
     soup = BeautifulSoup(r.text, "html.parser")
-    for img in soup.find_all("img", src=True):
-        m = KIOSKO_IMG_RE.match(img["src"])
+    for img in soup.find_all("img"):
+        src = (img.get("src") or img.get("data-src") or
+               img.get("data-original") or img.get("data-lazy-src") or "")
+        if not src and img.get("srcset"):
+            src = img["srcset"].split()[0]
+        m = KIOSKO_IMG_RE.match(src.strip())
         if not m: continue
         yr, mo, dy, cc, slug = m.groups()
         # name from alt: "Portada de <Name> (<COUNTRY>)"
@@ -254,21 +310,24 @@ def _kiosko_fetch_index(url, verbose=False):
             "thumb": f"https://img.kiosko.net/{yr}/{mo}/{dy}/{cc}/{slug}.200.jpg",
             "source": "Kiosko", "page_url": f"{KIOSKO}/{cc}/np/{slug}.html",
         }
-    return found
+    return found, None
 
 def scrape_kiosko(verbose=False):
     merged = {}
     urls = _kiosko_index_urls()
     log(f"  Kiosko.net: scanning {len(urls)} index pages...")
+    errors = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futs = [pool.submit(_kiosko_fetch_index, u, verbose) for u in urls]
         for f in as_completed(futs):
-            for k, v in f.result().items():
+            got, err = f.result()
+            if err: errors.append(err)
+            for k, v in got.items():
                 merged.setdefault(k, v)
     out = list(merged.values())
-    if verbose:
-        for p in out: log(f"    KI  [{p['country']}] {p['name']}")
-    log(f"  Kiosko.net: {len(out)} papers")
+    log(f"  Kiosko.net: {len(out)} papers ({len(errors)} index pages unreachable)")
+    for line in error_summary([e.split(": ",1)[-1] for e in errors]):
+        log(line)
     return out
 
 # ---------------------------------------------------------------------------
@@ -301,21 +360,27 @@ def _slug_for(paper) -> str:
 
 
 def _mirror_one(paper):
-    """Download one front page, save a full + thumb copy, return updated paper
-    with local relative paths. Returns None if the image can't be fetched."""
+    """Download one front page, save a full + thumb copy, return (paper, None)
+    with local relative paths, or (None, reason) if it couldn't be fetched.
+
+    The Referer matters: these sites serve images only to requests that look
+    like they came from their own pages."""
+    ref = paper.get("page_url") or REFERERS.get(paper["source"])
     try:
-        r = requests.get(paper["image"], headers=HEADERS, timeout=45)
-        r.raise_for_status()
+        r = http_get(paper["image"], referer=ref, tries=2, timeout=45, image=True)
+        ctype = r.headers.get("Content-Type", "?").split(";")[0]
+        if not ctype.startswith("image"):
+            return None, f"served {ctype} instead of an image"
         img = Image.open(io.BytesIO(r.content))
         if img.mode not in ("RGB", "L"):
             img = img.convert("RGB")
-    except Exception:
-        return None
+    except Exception as e:
+        return None, str(e)[:70]
 
     slug = _slug_for(paper)
     w, h = img.size
     if w < 200 or h < 200:
-        return None  # placeholder / spacer image, not a real front page
+        return None, f"tiny image ({w}x{h}), probably a placeholder"
 
     full = img
     if max(w, h) > FULL_MAX_EDGE:
@@ -328,14 +393,14 @@ def _mirror_one(paper):
     try:
         full.save(IMG_DIR / "full" / f"{slug}.jpg", "JPEG", quality=86, optimize=True)
         thumb.save(IMG_DIR / "thumb" / f"{slug}.jpg", "JPEG", quality=80, optimize=True)
-    except Exception:
-        return None
+    except Exception as e:
+        return None, "save failed: " + str(e)[:50]
 
     out = dict(paper)
     out["origin"] = paper["image"]          # kept for reference
     out["image"] = f"img/full/{slug}.jpg"   # relative to the site root
     out["thumb"] = f"img/thumb/{slug}.jpg"
-    return out
+    return out, None
 
 
 def mirror(papers, verbose=False):
@@ -346,19 +411,21 @@ def mirror(papers, verbose=False):
     (IMG_DIR / "thumb").mkdir(parents=True, exist_ok=True)
 
     log(f"\nMirroring {len(papers)} images locally (this is the slow part)...")
-    out, failed = [], 0
+    out, errors = [], []
     with ThreadPoolExecutor(max_workers=MIRROR_WORKERS) as pool:
         futs = {pool.submit(_mirror_one, p): p for p in papers}
         for f in as_completed(futs):
-            res = f.result()
+            res, why = f.result()
             if res:
                 out.append(res)
             else:
-                failed += 1
-                if verbose:
-                    log(f"    x  {futs[f]['name']} ({futs[f]['source']}) — image not available")
+                errors.append(why or "unknown")
     size_mb = sum(f.stat().st_size for f in IMG_DIR.rglob("*.jpg")) / 1e6
-    log(f"  mirrored {len(out)} images ({size_mb:.0f} MB), {failed} unavailable and dropped")
+    log(f"  mirrored {len(out)} images ({size_mb:.0f} MB), {len(errors)} could not be fetched")
+    if errors:
+        log("  reasons images failed:")
+        for line in error_summary(errors):
+            log(line)
     return out
 
 
@@ -421,4 +488,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
